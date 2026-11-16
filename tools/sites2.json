@@ -1,0 +1,14 @@
+﻿[
+  ["apple", "https://www.apple.com/mac/"],
+  ["arxiv", "https://arxiv.org/abs/1706.03762"],
+  ["pg", "https://paulgraham.com/articles.html"],
+  ["craigslist", "https://sfbay.craigslist.org/"],
+  ["bbc", "https://www.bbc.com/news"],
+  ["stackoverflow", "https://stackoverflow.com/questions/11227809"],
+  ["pydocs", "https://docs.python.org/3/library/json.html"],
+  ["mdn", "https://developer.mozilla.org/en-US/docs/Web/CSS/color-scheme"],
+  ["w3", "https://www.w3.org/TR/css-color-adjust-1/"],
+  ["nyt", "https://www.nytimes.com/"],
+  ["gov", "https://www.usa.gov/"],
+  ["example", "https://example.com/"]
+]

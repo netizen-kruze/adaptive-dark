@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<style>
+  body { margin: 0; padding: 14px 16px; width: 280px; font: 13px/1.4 system-ui, sans-serif; background: #1c1b22; color: #e8e6e3; }
+  h1 { font-size: 14px; margin: 0 0 10px; }
+  label { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; }
+  input { width: 16px; height: 16px; margin: 0; flex: none; }
+  #host { color: #9aa0a6; font-size: 12px; word-break: break-all; margin: -4px 0 2px 24px; }
+  #status { color: #8ab4f8; font-size: 12px; margin: 0 0 6px 24px; min-height: 17px; }
+  .hint { color: #9aa0a6; font-size: 11px; margin: -4px 0 6px 24px; }
+  .sub { margin-left: 24px; }
+  .hint.sub { margin-left: 48px; }
+  p { color: #9aa0a6; font-size: 11px; margin: 10px 0 0; }
+  hr { border: 0; border-top: 1px solid #3a3944; margin: 6px 0; }
+</style>
+</head>
+<body>
+  <h1>Adaptive Dark</h1>
+  <label><input type="checkbox" id="site"> <span>Darken this site</span></label>
+  <div id="host"></div>
+  <div id="status"></div>
+  <label class="sub"><input type="checkbox" id="force"> <span>Force dark on this site</span></label>
+  <div class="hint sub">For sites that are left alone but still look light, or whose own dark design you don't like.</div>
+  <hr>
+  <label><input type="checkbox" id="all"> <span>Darken every site</span></label>
+  <div class="hint">On: all sites are darkened unless you switch one off above. Off: only sites you switch on.</div>
+  <label><input type="checkbox" id="sys"> <span>Follow light / dark mode</span></label>
+  <div class="hint">On: sites are darkened only while Windows or Firefox is set to dark, and go back to normal when you switch to light. Off: always darkened.</div>
+  <p>Sites that already have their own dark design are left alone. Alt+Shift+D switches the current site on or off.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

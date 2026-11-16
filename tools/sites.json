@@ -1,0 +1,9 @@
+[
+  ["hn", "https://news.ycombinator.com/"],
+  ["oldreddit", "https://old.reddit.com/"],
+  ["tailwind", "https://tailwindcss.com/docs/installation"],
+  ["bootstrap", "https://getbootstrap.com/docs/5.3/examples/album/"],
+  ["wikipedia", "https://en.wikipedia.org/wiki/Firefox"],
+  ["lit", "https://lit.dev/docs/"],
+  ["github", "https://github.com/mozilla/web-ext"]
+]

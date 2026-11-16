@@ -1,0 +1,21 @@
+{
+  "name": "adaptive-dark-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tests for the Adaptive Dark Firefox extension (unit, end-to-end in real Firefox, real-site and flash checks)",
+  "scripts": {
+    "test": "node --test unit.test.cjs && node e2e.cjs ../extension && npx --yes web-ext lint --source-dir ../extension --no-config-discovery",
+    "unit": "node --test unit.test.cjs",
+    "e2e": "node e2e.cjs ../extension",
+    "sites": "node harness.cjs ../extension out/sites sites light",
+    "flash": "node flash-real.cjs ../extension dark",
+    "build": "npx --yes web-ext build --source-dir ../extension --artifacts-dir ../dist --overwrite-dest --no-config-discovery"
+  },
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "pngjs": "^7.0.0",
+    "selenium-webdriver": "^4.52.0"
+  }
+}
+
