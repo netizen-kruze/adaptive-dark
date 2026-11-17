@@ -4,15 +4,17 @@ Firefox extension (Manifest V2) that darkens light-only websites, modelled on Sa
 The extension is in `extension/`, the tests in `tools/`. This file records what has been tested, how the design
 maps to what Apple published, and the Firefox behaviours that cost time to discover.
 
-## Status: v0.3.0 (2026-11-15), tested in Firefox 160 on Windows 11
+## Status: v0.3.1 (2026-11-16), tested in Firefox 160 on Windows 11
 - `npx web-ext lint`: 0 errors, 0 warnings.
 - 12 unit tests (Node) and 126 end-to-end checks (real Firefox, headless) pass.
 - 19 real sites load with no extension errors in the Browser Console.
 - Real-screen sampling (165 samples/s, visible window, dark Firefox theme): 0 light frames across 9 navigations.
 - Not machine-testable: the physical Alt+Shift+D key press (its handler and registration are tested).
 - Not tested: crowdsupply.com itself in the test browser (Cloudflare bot check; its structure is a fixture), real old.reddit.com pages (login wall), a real light-only Tailwind site (covered by fixtures only).
-- Seen once, never reproduced: "Script terminated by timeout at splitTop" on one of 12 sites in one dark run.
-  Work per page measured afterwards at <= 86 ms for the longest single pause; `splitTop` was rewritten anyway.
+- "Script terminated by timeout" in the Browser Console (at a different harmless line each time, ~3 runs in 5)
+  was Firefox killing the content script on the transient about:blank document of a brand-new tab, not slow
+  code. Fixed in 0.3.1 by not starting on a top-level about:blank without an opener (5 clean runs in a row).
+  The one-off at `splitTop` during a real-site run in 0.2.0 was probably the same thing; unproven.
 
 ## How to test (run from `tools/`; `npm install` once; set `FIREFOX_BIN` if Firefox is not in the default Windows location)
 - `npm test` — unit tests, `e2e.cjs` (fixtures served by `server.cjs`), then lint. Exit code 0 = pass.

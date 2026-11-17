@@ -32,7 +32,7 @@ return out;`;
 
 const CONSOLE = `
 return Services.console.getMessageArray().map(m => {
-  try { const e = m.QueryInterface(Ci.nsIScriptError); return { msg: e.errorMessage, src: e.sourceName, line: e.lineNumber }; }
+  try { const e = m.QueryInterface(Ci.nsIScriptError); return { msg: e.errorMessage, src: e.sourceName, line: e.lineNumber, ts: m.timeStamp }; }
   catch (x) { return { msg: String(m.message), src: '' }; }
 }).filter(e => /moz-extension|adaptive/i.test(e.src + ' ' + e.msg) || (/Content-Security-Policy/.test(e.msg) && /127\\.0\\.0\\.1/.test(e.src + e.msg)));`;
 
@@ -54,11 +54,11 @@ async function session(scheme, fn) {
     await driver.installAddon(extDir, true);
     await sleep(1200);
     await driver.setContext(firefox.Context.CHROME);
-    const uuid = await driver.executeScript("return JSON.parse(Services.prefs.getStringPref('extensions.webextensions.uuids'))['adaptive-dark@local']");
+    const uuid = await driver.executeScript("return JSON.parse(Services.prefs.getStringPref('extensions.webextensions.uuids'))[arguments[0]]", require(path.join(extDir, 'manifest.json')).browser_specific_settings.gecko.id);
     await driver.setContext(firefox.Context.CONTENT);
     const t = {
       driver, uuid,
-      go: async (p, wait = 2500) => { await driver.get(p.startsWith('http') ? p : BASE + p); await sleep(wait); },
+      go: async (p, wait = 2500) => { if (process.env.E2E_DEBUG) console.log('   ', Date.now(), p); await driver.get(p.startsWith('http') ? p : BASE + p); await sleep(wait); },
       probe: (ids = []) => driver.executeScript(PROBE, ids),
       px: async id => pixels(await driver.findElement(By.id(id)).takeScreenshot()),
       shot: async name => fs.writeFileSync(path.join(outDir, name + '.png'), Buffer.from(await driver.takeScreenshot(), 'base64')),
@@ -73,6 +73,7 @@ async function session(scheme, fn) {
     };
     await fn(t);
     const errs = await t.console();
+    if (process.env.E2E_DEBUG) for (const c of errs) console.log('   CONSOLE', c.ts, c.src, c.line, c.msg.slice(0, 1500));
     const seen = new Map();
     for (const c of errs) { const k = `${c.src.replace(/^moz-extension:\/\/[^/]+/, '')}:${c.line} ${c.msg.slice(0, 220)}`; seen.set(k, (seen.get(k) || 0) + 1); }
     ok(`[${scheme}] no extension errors or CSP violations in the browser console`, errs.length === 0, [...seen].map(([k, n]) => `x${n} ${k}`));

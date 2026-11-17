@@ -25,6 +25,13 @@
 
   let reason = '';                      // why we are off: disabled | system | print | declares | dark | unsupported
   if (!/html/i.test(document.contentType || 'text/html')) { reason = 'unsupported'; setState('off'); return; }
+  // A brand-new tab starts as an empty about:blank page that Firefox replaces a few milliseconds
+  // later. There is nothing on it to darken, and work started there is killed halfway (Firefox
+  // logs that as "Script terminated by timeout"). Blank pages a site opened itself (window.open)
+  // and blank frames are real pages and are handled as usual.
+  try {
+    if (window.top === window && location.href === 'about:blank' && !window.opener) { reason = 'unsupported'; return; }
+  } catch (e) {}
 
   // ---- canvas-backed parser for colours the fast parser cannot handle
   let cx = null;

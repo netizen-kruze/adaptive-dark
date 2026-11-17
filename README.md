@@ -7,7 +7,7 @@ Sites that are already dark, or that say they handle dark mode themselves, are l
 It is not affiliated with Apple or Mozilla. It collects no data and sends nothing anywhere: all work happens
 inside your browser.
 
-**Status: early (v0.3.0).** It has automated tests and has been checked on about twenty well-known sites, but
+**Status: early (v0.3.1).** It has automated tests and has been checked on about twenty well-known sites, but
 not on thousands. Expect some sites to look wrong; the per-site switches are there for that, and bug reports
 with a URL are welcome.
 
