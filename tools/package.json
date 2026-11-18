@@ -8,6 +8,7 @@
     "unit": "node --test unit.test.cjs",
     "e2e": "node e2e.cjs ../extension",
     "sites": "node harness.cjs ../extension out/sites sites light",
+    "sweep": "node sweep.cjs ../extension out/sweep sites-wide.json dark",
     "flash": "node flash-real.cjs ../extension dark",
     "build": "npx --yes web-ext build --source-dir ../extension --artifacts-dir ../dist --overwrite-dest --no-config-discovery"
   },

@@ -27,7 +27,7 @@ const out = { state: document.documentElement.getAttribute('data-adm'), styleEls
 for (const id of ids) out[id] = cs(document.getElementById(id));
 if (window.__open) out.shadowOpen = cs(window.__open.querySelector('.x'));
 if (window.__closed) out.shadowClosed = cs(window.__closed.querySelector('.x'));
-if (window.__adopt) out.adopted = cs(window.__adopt.querySelector('.y'));
+if (window.__adopt) { out.adopted = cs(window.__adopt.querySelector('.y')); out.adoptedImp = cs(window.__adopt.querySelector('.z')); }
 return out;`;
 
 const CONSOLE = `
@@ -90,7 +90,7 @@ async function darkSession(t) {
   await t.go('/basic.html', 3200);
   let p = await t.probe(['plain', 'short', 'short2', 'tw', 'bs', 'nest', 'layer', 'media', 'named', 'cross', 'lossy', 'lossy2', 'lossy3', 'lossy4', 'inline', 'attr', 'font', 'late', 'lineart', 'photo', 'xlineart']);
   ok('basic: switched on', p.state === 'on' && p.styleEls === 1, p.state);
-  for (const id of ['plain', 'short', 'short2', 'tw', 'bs', 'nest', 'layer', 'media', 'named', 'cross', 'lossy3', 'lossy4', 'inline', 'attr', 'late', 'shadowOpen', 'shadowClosed', 'adopted'])
+  for (const id of ['plain', 'short', 'short2', 'tw', 'bs', 'nest', 'layer', 'media', 'named', 'cross', 'lossy3', 'lossy4', 'inline', 'attr', 'late', 'shadowOpen', 'shadowClosed', 'adopted', 'adoptedImp'])
     ok(`basic: #${id} background is dark`, p[id] && isDark(p[id].bg), p[id] && p[id].bg);
   ok('basic: page text is light', isLight(p.body.fg), p.body.fg);
   ok('basic: <font color> is light', isLight(p.font.fg), p.font.fg);
@@ -150,6 +150,19 @@ async function darkSession(t) {
   await t.go('/already-dark.html', 2600);
   p = await t.probe(['inline']);
   ok('already-dark: inline style left as authored', p.inline.style === 'color:#ffffff;background-color:#000000', p.inline.style);
+
+  // ---------- cases found by the wide real-site sweep
+  await t.go('/sweep-cases.html', 2600);
+  p = await t.probe(['plain', 'band', 'ghost', 'wall', 'ink', 'inlinevar']);
+  ok('cascade: a later rule that keeps white text still beats an earlier coloured one', isLight(p.band.fg) && /11, 114, 97/.test(p.band.bg), p.band);
+  ok('cascade: a later "background: none" still clears the box', /rgba\(0, 0, 0, 0\)/.test(p.ghost.bg), p.ghost.bg);
+  ok('all:initial overlay: background darkened, text light', isDark(p.wall.bg) && isLight(p.wall.fg), p.wall);
+  ok('@property colour default: text is light', isLight(p.ink.fg), p.ink.fg);
+  ok('inline "background: var(--x)": darkened', isDark(p.inlinevar.bg), p.inlinevar);
+  await d.executeScript("window.dispatchEvent(new Event('beforeprint'));"); await sleep(400);
+  p = await t.probe(['inlinevar']);
+  ok('inline "background: var(--x)": restored exactly when switched off', p.inlinevar.style === '--fill: #FFF9F5; background: var(--fill)' && isLight(p.inlinevar.bg), p.inlinevar);
+  await d.executeScript("window.dispatchEvent(new Event('afterprint'));"); await sleep(400);
 
   // ---------- "already dark" must be judged by what is on screen, not by the base colour alone
   await t.go('/dark-base-light-boxes.html', 2600);

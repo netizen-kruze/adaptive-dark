@@ -99,14 +99,17 @@ test('custom properties: rgb triplets, hsl triplets, twins per role', () => {
 
 test('genBody: longhands, shorthands with var(), fallback colours, !important', () => {
   assert.match(body([{ p: 'color', v: '#000', i: false }]), /^color:#[d-f]\w+;$/);
-  assert.equal(body([{ p: 'color', v: '#fff', i: false }]), '', 'already-light text needs no override');
+  assert.equal(body([{ p: 'color', v: '#fff', i: false }]), 'color:#fff;', 'already-light text is restated so an earlier override cannot beat it');
+  assert.equal(body([{ p: 'color', v: 'inherit', i: false }]), 'color:inherit;', 'keywords are restated for the same reason');
+  assert.equal(body([{ p: 'background', v: 'none', i: true }]), 'background-color:transparent !important;', 'background: none clears the colour');
+  assert.equal(body([{ p: 'border', v: 'none', i: false }]), '', 'border: none needs nothing');
   assert.equal(body([{ p: 'background', v: 'var(--bg)', i: true }], env(['--bg'])), 'background-color:var(--adm-bg--bg, var(--bg)) !important;');
   assert.match(body([{ p: 'border', v: '1px solid var(--line, #dddddd)', i: false }]), /^border-color:var\(--line,\s*#[34]\w+\);$/);
   assert.equal(body([{ p: 'background', v: 'var(--img) center', i: false }]), '', 'non-colour variable: leave alone');
 });
 
 test('genBody: masked icons use the text role, blend modes are neutralised', () => {
-  assert.equal(body([{ p: 'background-color', v: '#202122', i: false }]), '', 'dark surface stays');
+  assert.equal(body([{ p: 'background-color', v: '#202122', i: false }]), 'background-color:#202122;', 'dark surface stays (restated)');
   assert.match(body([{ p: 'background-color', v: '#202122', i: false, role: 'fg' }]), /^background-color:#[c-f]\w+;$/);
   assert.equal(body([{ p: 'mix-blend-mode', v: 'normal', blend: true, i: false }]), 'mix-blend-mode:normal;');
 });
@@ -171,4 +174,27 @@ test('decideImage: glyphs, line art, photos, thin strokes, textures', () => {
   assert.equal(A.decideImage(wordmark, 'img'), true, 'mostly-black logo with a coloured emblem');
   assert.equal(A.decideImage(brand, 'img'), false, 'mostly-coloured logo is kept');
   assert.equal(A.decideImage(navy, 'img'), false, 'coloured glyphs are kept');
+
+  // Product photos: a shaded object on a pure white backdrop (white camera with a dark lens),
+  // a black object on white, and a dark cut-out on transparency. All colourless, none a drawing.
+  const ball = (cx, cy, r, lo, hi, bg) => sample((x, y) => {
+    const dd = Math.hypot(x - cx, y - cy);
+    if (dd > r) return bg;
+    if (dd < 4) return [15, 15, 15, 255];                                    // lens
+    const v = Math.round(hi - (hi - lo) * (Math.hypot(x - cx + 6, y - cy + 6) / (r + 6)));   // lit from top-left
+    return [v, v, v, 255];
+  });
+  assert.equal(A.decideImage(ball(24, 24, 16, 150, 250, [255, 255, 255, 255]), 'img'), false, 'white product on white is a photo');
+  assert.equal(A.decideImage(ball(24, 24, 16, 8, 120, [255, 255, 255, 255]), 'img'), false, 'black product on white is a photo');
+  assert.equal(A.decideImage(ball(24, 24, 16, 8, 120, [0, 0, 0, 0]), 'img'), false, 'dark cut-out product is a photo');
+  assert.equal(A.decideImage(lineArt, 'img', true), false, 'a JPEG <img> is never inverted');
+  assert.equal(A.decideImage(lineArt, 'bg', true), true, 'the JPEG rule does not apply to background images');
+  const haze = sample((x, y) => { const v = 226 + ((x * 3 + y * 5) % 17); return [v, v - 2, v - 3, 255]; });   // pale, soft, featureless
+  assert.equal(A.decideImage(haze, 'img', true), 'backdrop', 'a pale featureless JPEG is a candidate backdrop');
+  assert.equal(A.decideImage(ball(24, 24, 16, 150, 250, [255, 255, 255, 255]), 'img', true), false, 'a white product photo is not a backdrop');
+  // Drawings keep being recognised: anti-aliased strokes and a diagram with flat grey boxes.
+  const soften = sample((x, y) => { const e = Math.min(x % 12, 12 - (x % 12)); return e === 0 ? [0, 0, 0, 255] : e === 1 ? [128, 128, 128, 255] : [255, 255, 255, 255]; });
+  const boxes = sample((x, y) => (x % 16 === 0 || y % 16 === 0 ? [0, 0, 0, 255] : (x > 16 && x < 32 && y > 16 && y < 32 ? [210, 210, 210, 255] : [255, 255, 255, 255])));
+  assert.equal(A.decideImage(soften, 'img'), true, 'anti-aliased line art is still inverted');
+  assert.equal(A.decideImage(boxes, 'img'), true, 'diagram with a flat grey fill is still inverted');
 });

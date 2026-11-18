@@ -443,8 +443,10 @@ var ADM = (() => {
       if (e.found) { if (isSingleToken(t)) cand = t; else whole = true; }
     }
     const e = sub();
-    if (whole) { const t = transform(v, role, e); return e.found && t !== v ? [p, t] : null; }
-    if (cand) { const t = transform(cand, role, e); return e.found && t !== cand ? [longhand, t] : null; }
+    if (whole) { const t = transform(v, role, e); return e.found ? [p, t] : null; }
+    if (cand) { const t = transform(cand, role, e); return e.found ? [longhand, t] : null; }
+    // background: none / url(...) also clears the colour; say so, for the same cascade reason as in genBody
+    if (p === 'background' && !v.includes('var(')) return ['background-color', 'transparent'];
     return null;
   }
 
@@ -453,6 +455,7 @@ var ADM = (() => {
    * env:   { colorVars, composite, base }
    * Returns the body of the override rule ('' when nothing needs to change).
    */
+  const RESTATE = /^(inherit|initial|unset|revert|revert-layer|currentcolor|none)$/i;
   function genBody(items, env, forceImportant) {
     let body = '';
     for (const it of items) {
@@ -481,7 +484,11 @@ var ADM = (() => {
       } else {
         const e = { colorVars: env.colorVars, base: env.base, docBase: env.docBase, bg: env.bg, found: false };
         const t = transform(it.v, it.role || PROPS[it.p], e);
-        if (e.found && t !== it.v) body += `${it.p}:${t}${imp};`;
+        // Restate the declaration even when the colour comes out unchanged (white text on a
+        // coloured band) or is a keyword (inherit, transparent): our sheet sits after the page's,
+        // so an override of an EARLIER rule would otherwise beat this later one.
+        if (e.found) body += `${it.p}:${t}${imp};`;
+        else if (RESTATE.test(it.v.trim())) body += `${it.p}:${it.v.trim()}${imp};`;
       }
     }
     return body;
@@ -568,9 +575,9 @@ var ADM = (() => {
    *   kind 'bg' : a CSS background: additionally invert light, colourless textures and
    *               gradients (they would otherwise sit bright behind text that is now light).
    */
-  function decideImage(d, kind) {
+  function decideImage(d, kind, jpeg) {
     const hist = new Array(8).fill(0);
-    let ink = 0, clear = 0, sumC = 0, light = 0, dark = 0, sumL = 0, darkInk = 0;
+    let ink = 0, clear = 0, sumC = 0, light = 0, dark = 0, sumL = 0, darkInk = 0, low = 0;
     const n = d.length / 4;
     for (let i = 0; i < d.length; i += 4) {
       const w = d[i + 3] / 255;
@@ -579,11 +586,21 @@ var ADM = (() => {
       const r = d[i], g = d[i + 1], b = d[i + 2];
       const l = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
       const ch = (Math.max(r, g, b) - Math.min(r, g, b)) / 255;
-      ink += w; sumL += l * w; sumC += w * ch;
+      ink += w; sumL += l * w; sumC += w * ch; if (l < 0.7) low += w;
       if (l > 0.85) light += w; else if (l < 0.3) { dark += w; if (ch < 0.15) darkInk += w; }
       hist[Math.min(7, (l * 8) | 0)] += w;
     }
     if (ink < 6) return false;                                  // practically empty
+    // Photographs of white, grey or black things (product shots on a white backdrop, cut-outs)
+    // are as colourless as drawings. What gives them away is shading: whole areas of in-between
+    // tones that vary. A drawing has in-between tones only along its edges (anti-aliasing) or as
+    // flat fills of a single tone.
+    // JPEG is the photo format. A dark object shot on white (cables, keyboards, furniture) has too
+    // little shading at this size to be told from a drawing, so for <img> the format decides.
+    // One exception: a pale, colourless, featureless picture. If the page shows it very large it is
+    // a backdrop with text on top (the content script checks the size), not something to look at.
+    const backdrop = kind !== 'bg' && clear / n < 0.1 && sumL / ink > 0.85 && sumC / ink < 0.08 && low / ink < 0.01 ? 'backdrop' : false;
+    if (kind !== 'bg' && (jpeg || shaded(d, ink))) return backdrop;
     // On transparency (logos, icons): invert when most of the ink is black/grey, even if a
     // coloured emblem sits beside it (invert + hue-rotate keeps the emblem's hue).
     if (clear / n > 0.1) return darkInk / ink > 0.5;
@@ -593,7 +610,30 @@ var ADM = (() => {
     if ((top[0] + top[1]) / ink >= 0.8 && light / ink > 0.55 && dark / ink > 0.02) return true;
     // colourless and bright all over: a light texture or gradient strip behind text (backgrounds),
     // or a near-white banner / pale wordmark (<img>, stricter so greyscale photos are kept)
-    return sumL / ink > (kind === 'bg' ? 0.8 : 0.92);
+    // An <img> must be pale throughout: a white object photographed on white has darker details.
+    return kind === 'bg' ? sumL / ink > 0.8 : (sumL / ink > 0.92 && low / ink < 0.01) || backdrop;
+  }
+
+  // True when a square RGBA sample contains shading. Looks only at smooth spots (a pixel whose
+  // four neighbours are nearly the same tone, so not an edge) and counts how many different
+  // tones those spots have. A drawing's smooth spots are its paper and its ink: two or three
+  // tones, a few more with flat grey fills or JPEG noise. A photo has many, even when the thing
+  // photographed is white on white (soft shadows) or black (highlights).
+  function shaded(d, ink) {
+    const side = Math.round(Math.sqrt(d.length / 4));
+    const lum = new Float32Array(side * side);
+    for (let p = 0, i = 0; p < lum.length; p++, i += 4) {
+      lum[p] = d[i + 3] > 127 ? (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) / 255 : -9;   // -9: see-through
+    }
+    const tones = new Array(64).fill(0), near = (a, b) => Math.abs(a - b) < 0.08;
+    let smooth = 0;
+    for (let y = 1; y < side - 1; y++) for (let x = 1; x < side - 1; x++) {
+      const p = y * side + x, l = lum[p];
+      if (l < 0 || !near(l, lum[p - 1]) || !near(l, lum[p + 1]) || !near(l, lum[p - side]) || !near(l, lum[p + side])) continue;
+      smooth++; tones[Math.min(63, (l * 64) | 0)]++;
+    }
+    const min = Math.max(3, lum.length / 800), used = tones.filter(c => c >= min), top = tones.slice().sort((a, b) => b - a);
+    return used.length >= 8 && (smooth - top[0] - top[1]) / ink > 0.04;
   }
 
   return {

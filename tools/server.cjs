@@ -34,8 +34,8 @@ const BASIC = (B) => `<!doctype html><html><head><meta charset="utf-8"><title>ba
 <script>
 const mk=(id,mode)=>{const h=document.getElementById(id);const r=h.attachShadow({mode});r.innerHTML='<style>.x{background:#fff;color:#000}</style><div class="x">shadow '+mode+'</div>';return r;};
 window.__open=mk('openhost','open');window.__closed=mk('closedhost','closed');
-const ar=document.getElementById('adopthost').attachShadow({mode:'open'});ar.innerHTML='<div class="y">adopted</div>';
-const ss=new CSSStyleSheet();ss.replaceSync('.y{background:#fff;color:#000}');ar.adoptedStyleSheets=[ss];window.__adopt=ar;
+const ar=document.getElementById('adopthost').attachShadow({mode:'open'});ar.innerHTML='<div class="y">adopted</div><div class="z">adopted important</div>';
+const ss=new CSSStyleSheet();ss.replaceSync('.y{background:#fff;color:#000} .z{background:#fff !important;color:#111 !important}');ar.adoptedStyleSheets=[ss];window.__adopt=ar;
 setTimeout(()=>{const d=document.createElement('div');d.id='late';d.style.backgroundColor='#ffffff';d.textContent='late';document.body.appendChild(d);
 const s=document.createElement('style');document.head.appendChild(s);s.sheet.insertRule('#plain{outline-color:#000}',0);},300);
 </script></body></html>`;
@@ -122,6 +122,24 @@ function start(A, B) {
     // A site with its own theme switch: starts dark, script switches it to light on request.
     if (u.pathname === '/theme-switch.html') return send('text/html',
       '<!doctype html><html class="dark"><head><title>ts</title><style>body{margin:0;background:#fff;color:#111}.dark body{background:#111;color:#eee}#plain{min-height:300px}</style></head><body><div id="plain">switchable</div></body></html>');
+    // Cases found by the wide real-site sweep (rust-lang.org, techcrunch.com, apple.com, microsoft.com).
+    if (u.pathname === '/sweep-cases.html') return send('text/html', `<!doctype html><html><head><title>sweep</title><style>
+      body{background:#fff;color:#111}
+      .band{color:#19a974}                                   /* utility class, earlier */
+      .band{background-color:#0b7261;color:white}            /* site's own rule, later: white text on a green band */
+      .ghost{background:#fff}
+      .ghost{background:none}                                /* later rule clears it */
+      #wall{all:initial;display:block;background-color:#fff;color:#000}
+      @property --card-ink { syntax: "<color>"; inherits: true; initial-value: rgba(0,0,0,.88); }
+      #card{background:#fff} #ink{color:var(--card-ink)}
+    </style></head><body>
+      <div id="plain">plain</div>
+      <div id="band" class="band">white on green</div>
+      <div id="ghost" class="ghost">ghost</div>
+      <div id="wall">overlay built with all:initial</div>
+      <div id="card"><span id="ink">ink from an @property default</span></div>
+      <div id="inlinevar" style="--fill: #FFF9F5; background: var(--fill)">inline shorthand with a variable</div>
+    </body></html>`);
     if (u.pathname === '/slow.html') {
       // Head arrives immediately, body 2.5 s later: the window should be dark for the whole wait.
       res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });

@@ -96,7 +96,7 @@ const waiting = [];
 const slot = () => new Promise(res => { if (running < 4) { running++; res(); } else waiting.push(res); });
 const release = () => { const next = waiting.shift(); if (next) next(); else running--; };
 
-const S = 48;
+const S = 96;   // sample size for image statistics: enough to see shading on small product photos
 const canvas = document.createElement('canvas');
 canvas.width = canvas.height = S;
 const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -124,13 +124,24 @@ async function fetchLimited(url, maxBytes) {
 async function load(url, maxBytes) {
   const blob = await fetchLimited(url, maxBytes);
   if (!blob) return null;
+  // A broken SVG (often an error page served under an image address) would make Firefox log an
+  // "XML Parsing Error" when decoded as an image; a quiet parse first avoids that.
+  if (/svg|xml/i.test(blob.type)) {
+    const doc = new DOMParser().parseFromString(await blob.text(), 'image/svg+xml');
+    if (!doc.documentElement || doc.documentElement.localName !== 'svg' || doc.querySelector('parsererror')) return null;
+  }
   const obj = URL.createObjectURL(blob);
   try {
     const img = new Image();
     await new Promise((ok, no) => { img.onload = ok; img.onerror = no; img.src = obj; });
     ctx.clearRect(0, 0, S, S);
     ctx.drawImage(img, 0, 0, S, S);
-    return { blob, w: img.naturalWidth, h: img.naturalHeight, data: ctx.getImageData(0, 0, S, S).data };
+    // Read the pixels in the same tick as the draw: the canvas is shared between parallel loads.
+    const data = ctx.getImageData(0, 0, S, S).data;
+    // JPEG by its first bytes (FF D8 FF), whatever the server calls it
+    const head = new Uint8Array(await blob.slice(0, 3).arrayBuffer());
+    const jpeg = head[0] === 0xFF && head[1] === 0xD8 && head[2] === 0xFF;
+    return { blob, jpeg, w: img.naturalWidth, h: img.naturalHeight, data };
   } finally {
     URL.revokeObjectURL(obj);
   }
@@ -138,7 +149,7 @@ async function load(url, maxBytes) {
 
 async function analyze(url) {
   const r = await load(url, 3e6);
-  return !!r && decide(r.data, 'img');
+  return !!r && decide(r.data, 'img', r.jpeg);
 }
 
 const FILTER = 'filter:invert(1) hue-rotate(180deg)';

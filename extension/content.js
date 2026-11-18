@@ -105,7 +105,9 @@
     // An element with a mask is an icon: its "background" is really the ink colour.
     const roleFor = p => {
       if (p !== 'background-color' && p !== 'background') return undefined;
-      if (masked === null) masked = /mask/.test(st.cssText);
+      if (masked === null) {   // a real mask (not "all: initial" or "mask: none")
+        masked = ['mask-image', '-webkit-mask-image', 'mask'].some(k => { const v = st.getPropertyValue(k).trim(); return !!v && !/^(none|initial|unset|inherit|revert|revert-layer)\b/i.test(v); });
+      }
       return masked ? 'fg' : undefined;
     };
     for (let i = 0; i < st.length; i++) {
@@ -199,6 +201,14 @@
           const frames = [];
           for (const k of r.cssRules) frames.push({ key: k.keyText, text: k.style.cssText, items: readStyle(k.style) });
           if (!lostFlag && frames.some(f => f.items.length)) out.push({ kf: CSS.escape(r.name), frames, open, close: '}'.repeat(depth), base });
+        } else if (typeof r.initialValue === 'string' && typeof r.name === 'string' && r.name.startsWith('--')) {
+          // @property --x { syntax: "<color>"; initial-value: ... }: a colour variable whose default
+          // applies wherever no rule sets it. Give that default its twins at the root.
+          const v = r.initialValue.trim(), info = v ? A.analyzeCustom(v) : null;
+          if (info && (info.color || info.refs.length)) {
+            addCustom(r.name, v, info);
+            out.push({ open, close: '}'.repeat(depth), sel: ':root', items: [{ p: r.name, v, i: false, info }], base, lost: false });
+          }
         } else if (type === 0 && r.cssRules) {               // @layer / @container / @scope / ...
           let pre;
           if (typeof r.conditionText === 'string') pre = '@container ' + r.conditionText;
@@ -267,8 +277,19 @@
         if (any) css += e.open + '@keyframes ' + e.kf + '{' + inner + '}' + e.close + '\n';
         continue;
       }
-      const body = A.genBody(e.items, env, force);
+      if (!force) {
+        const body = A.genBody(e.items, env, false);
+        if (body) css += e.open + e.sel + '{' + body + '}' + e.close + '\n';
+        continue;
+      }
+      // Adopted stylesheets come after ours in the cascade. Marking our override !important beats
+      // the page's ordinary declarations; where the page's own declaration is !important too, order
+      // would let it win, so those go into a cascade layer: an !important declaration inside a
+      // layer outranks an !important one outside it (or directly in the enclosing layer).
+      const strong = e.items.filter(it => it.i), plain = strong.length ? e.items.filter(it => !it.i) : e.items;
+      const body = A.genBody(plain, env, true), top = strong.length ? A.genBody(strong, env, true) : '';
       if (body) css += e.open + e.sel + '{' + body + '}' + e.close + '\n';
+      if (top) css += e.open + '@layer{' + e.sel + '{' + top + '}}' + e.close + '\n';
     }
     d.css = css; d.ver = varsVer; d.force = force;
     return css;
@@ -404,7 +425,20 @@
       if (p.startsWith('--adm-')) continue;
       if (!p.startsWith('--') && !A.PROPS[p]) continue;
       const cur = st.getPropertyValue(p).trim();
-      if (!cur) continue;
+      if (!cur) {
+        // style="background: var(--x)": the longhands read empty, only the shorthand has the text.
+        for (const sh of A.LONG2SHORT[p] || []) {
+          const sv = st.getPropertyValue(sh).trim();
+          if (!sv) continue;
+          if (!src.has(sh)) {
+            const r = rec.get(sh);
+            if (r && sv === r.mapped) { if (r.orig !== null) src.set(sh, [r.orig, r.prio, false]); }
+            else src.set(sh, [sv, st.getPropertyPriority(sh), false]);
+          }
+          break;
+        }
+        continue;
+      }
       const r = rec.get(p);
       if (r && cur === r.mapped) { if (r.orig !== null) src.set(p, [r.orig, r.prio, false]); }  // still our value
       else src.set(p, [cur, st.getPropertyPriority(p), false]);                                  // page's value
@@ -436,7 +470,7 @@
         }
         continue;
       }
-      let role = A.PROPS[p];
+      let role = A.PROPS[p] || (A.SHORTHANDS[p] && A.SHORTHANDS[p][0]);
       if (p === 'fill' && el.localName === 'rect') role = 'bg';   // chart/diagram backdrops
       const e = { colorVars, found: false, bg: bgLookup, docBase: document.baseURI };
       const t = A.transform(v, role, e);
@@ -513,7 +547,7 @@
     if (!url) return;
     if (img.localName === 'img') {
       if (!img.naturalWidth) return;                         // not loaded yet: the load listener calls us again
-      if (img.naturalWidth < 8 || img.naturalWidth * img.naturalHeight > 4e6) return setInv(img, false);
+      if (img.naturalWidth < 8 || img.naturalWidth * img.naturalHeight > 12e6) return setInv(img, false);
     }
     if (url.startsWith('blob:')) return setInv(img, false);
     let p = imgCache.get(url);
@@ -522,8 +556,10 @@
       if (imgCache.size > 3000) imgCache.clear();
       imgCache.set(url, p);
     }
-    p.then(inv => { if (active && imgUrl(img) === url) setInv(img, !!inv); });
+    p.then(inv => { if (active && imgUrl(img) === url) setInv(img, inv === 'backdrop' ? isBackdrop(img) : !!inv); });
   }
+  // A pale, featureless picture counts as a page backdrop when it fills a third of the window or more.
+  const isBackdrop = img => { const r = img.getBoundingClientRect(); return r.width * r.height >= 0.33 * window.innerWidth * window.innerHeight; };
   const isImg = el => el.localName === 'img' || el.localName === 'image';
 
   // ------------------------------------------------------------------ DOM scanning
