@@ -72,6 +72,7 @@ async function session(scheme, fn) {
       console: async () => { await driver.setContext(firefox.Context.CHROME); const c = await driver.executeScript(CONSOLE); await driver.setContext(firefox.Context.CONTENT); return c; },
     };
     await fn(t);
+    if (t.hung) throw new Error('the tab stopped answering');   // further commands would only wait
     const errs = await t.console();
     if (process.env.E2E_DEBUG) for (const c of errs) console.log('   CONSOLE', c.ts, c.src, c.line, c.msg.slice(0, 1500));
     const seen = new Map();
@@ -80,7 +81,7 @@ async function session(scheme, fn) {
   } catch (e) {
     ok(`[${scheme}] session ran to completion`, false, String(e && e.stack || e).slice(0, 700));
   } finally {
-    await driver.quit().catch(() => {});
+    await Promise.race([driver.quit().catch(() => {}), sleep(10000)]);   // a hung tab must not hang the run
   }
 }
 
@@ -163,6 +164,26 @@ async function darkSession(t) {
   p = await t.probe(['inlinevar']);
   ok('inline "background: var(--x)": restored exactly when switched off', p.inlinevar.style === '--fill: #FFF9F5; background: var(--fill)' && isLight(p.inlinevar.bg), p.inlinevar);
   await d.executeScript("window.dispatchEvent(new Event('afterprint'));"); await sleep(400);
+
+  // ---------- cases found by the deep sweep (inner pages, shops, Dark Reader's hard list)
+  await t.go('/deep-cases.html', 3400);
+  p = await t.probe(['plain', 'tok', 'themed', 'themed2', 'btn1', 'btn2', 'fade', 'imp', 'impbox']);
+  let sheetText = await d.executeScript("return (document.querySelector('style[data-adm-s]') || {}).textContent || ''");
+  ok('colour tokens kept inline on <html>: the ones in use are darkened', p.state === 'on' && isDark(p.tok.bg) && isLight(p.tok.fg), p.tok);
+  ok('theme block in use: overridden', sheetText.includes('.theme-a{') && isDark(p.themed.bg), p.themed);
+  ok('theme blocks not in use: no overrides generated', !sheetText.includes('.theme-b{') && !sheetText.includes('.theme-c{'), sheetText.length);
+  ok('color-scheme: light on a container (inline, and by rule): button text is light', isLight(p.btn1.fg) && isLight(p.btn2.fg), { inline: p.btn1.fg, rule: p.btn2.fg });
+  ok('gradient mask (faded edge): the box is still a background', isDark(p.fade.bg), p.fade.bg);
+  ok('cross-origin sheet with @import: imported variables are found', isLight(p.imp.fg) && isDark(p.impbox.bg), { text: p.imp.fg, box: p.impbox.bg });
+  await d.executeScript("document.getElementById('later').className = 'theme-b';"); await sleep(1700);
+  p = await t.probe(['themed2']);
+  sheetText = await d.executeScript("return (document.querySelector('style[data-adm-s]') || {}).textContent || ''");
+  ok('theme applied later: picked up without reload', sheetText.includes('.theme-b{') && isDark(p.themed2.bg), p.themed2);
+
+  await t.go('/backdrop-photo.html', 3600);
+  p = await t.probe(['back', 'alone', 'head']);
+  ok('mostly white picture with text over it: dimmed, not inverted', /brightness/.test(p.back.filter) && !/invert/.test(p.back.filter) && isLight(p.head.fg), p.back.filter);
+  ok('the same picture with nothing over it: left as it is', p.alone.filter === 'none', p.alone.filter);
 
   // ---------- "already dark" must be judged by what is on screen, not by the base colour alone
   await t.go('/dark-base-light-boxes.html', 2600);
@@ -346,6 +367,56 @@ async function lightSession(t) {
   await d.switchTo().window(page); await sleep(500);
   p = await t.probe(['plain']);
   ok('follow-system: unticking brings dark back live', p.state === 'on' && isDark(p.body.bg), { state: p.state, bg: p.body.bg });
+
+  // ---------- "Copy a problem report" (the popup is told which tab to act on)
+  const popupFor = async url => { await d.switchTo().window(popup); await d.get(`moz-extension://${t.uuid}/popup.html?for=${encodeURIComponent(url)}`); await sleep(900); };
+  await t.go('/features.html', 2500);
+  let here = await d.getCurrentUrl();
+  await popupFor(here);
+  await d.findElement(By.id('report')).click(); await sleep(700);
+  const rep = await d.executeScript("return document.getElementById('report-text').value");
+  ok('report: names the page, status, versions and work figures',
+    /Page: http:\/\/127\.0\.0\.1:\d+\/features\.html\n/.test(rep) && /Status: Darkening this page\./.test(rep) && /Adaptive Dark \d+\.\d+\.\d+, Firefox \d+/.test(rep) && /Details: \d+ elements/.test(rep) && /Work: \d+ restyles/.test(rep), rep);
+  await d.switchTo().window(page);
+  // the same report gives the work figures for a page built to be expensive (500 inline colour
+  // variables on <html>, SVG <use>, <details>, <video controls>)
+  await t.go('/deep-cases.html', 3400);
+  here = await d.getCurrentUrl();
+  await popupFor(here);
+  await d.findElement(By.id('report')).click(); await sleep(700);
+  const rep2 = await d.executeScript("return document.getElementById('report-text').value");
+  const workMs = +(/(\d+) ms in total/.exec(rep2) || [])[1], shadowRoots = +(/(\d+) shadow roots/.exec(rep2) || [])[1];
+  ok('own changes are not processed again: 500 inline variables cost well under a second', workMs >= 0 && workMs < 800, rep2);
+  ok('browser-internal shadow trees (<use>, <details>, <video>) are not treated as page components', shadowRoots === 0, rep2);
+  await d.switchTo().window(page);
+
+  // ---------- the hang tests are kept last: if one regresses, the tab hangs and nothing after it could run
+  const hangTest = async (pagePath, wait, script) => {
+    try {
+      return await Promise.race([
+        (async () => { await t.go(pagePath, wait); return d.executeScript(script); })(),
+        new Promise((_, no) => setTimeout(() => no(new Error('tab did not answer within ' + (wait / 1000 + 15) + ' s')), wait + 15000)),
+      ]);
+    } catch (e) { t.hung = true; return { error: String(e.message || e).slice(0, 120) }; }
+  };
+
+  // ---------- a page that answers every change with a fresh element: the safety net switches the extension off there
+  const storm = await hangTest('/storm.html', 6500, "return { swaps: window.__swaps, state: document.documentElement.getAttribute('data-adm'), bg: getComputedStyle(document.body).backgroundColor, style: document.querySelector('#box div').getAttribute('style') };");
+  ok('storm: tab recovers and the extension switches itself off there', !storm.error && storm.state === 'off' && storm.swaps > 300 && isLight(storm.bg), storm);
+  ok('storm: the widget is left as the page made it', storm.style === 'background-color: #ffffff; color: #111111', storm);
+  if (!storm.error) {
+    here = await d.getCurrentUrl();
+    await popupFor(here);
+    const why = await d.findElement(By.id('status')).getText();
+    ok('storm: the popup says why it is off', /Switched itself off on this page/.test(why), why);
+    await d.switchTo().window(page);
+  }
+
+  // ---------- a page script that undoes our inline change at once must not freeze the tab
+  const fight = t.hung ? { error: 'skipped: the tab is already hung' }
+    : await hangTest('/style-fight.html', 1500, "const s = document.getElementById('star'); return { resets: window.__resets, style: s.getAttribute('style'), state: document.documentElement.getAttribute('data-adm'), bg: getComputedStyle(document.body).backgroundColor };");
+  ok('style fight: tab stays responsive', !fight.error && fight.resets > 0 && fight.resets < 40, fight);
+  ok('style fight: the element keeps the page\'s own style, the rest is dark', fight.style === 'fill: url("#g") !important; stroke: rgb(202, 77, 0);' && fight.state === 'on' && isDark(fight.bg), fight);
 }
 
 (async () => {

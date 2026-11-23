@@ -106,19 +106,25 @@ const decide = ADM.decideImage;   // pure pixel-statistics decision, lives in co
 // Download at most maxBytes; bigger files (photos) are abandoned instead of fetched twice.
 async function fetchLimited(url, maxBytes) {
   const ctl = new AbortController();
-  const res = await fetch(url, { credentials: 'omit', cache: 'force-cache', signal: ctl.signal });
-  if (!res.ok) return null;
-  if ((+res.headers.get('content-length') || 0) > maxBytes) { ctl.abort(); return null; }
-  const reader = res.body.getReader(), chunks = [];
-  let n = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    n += value.length;
-    if (n > maxBytes) { ctl.abort(); return null; }
-    chunks.push(value);
+  // A server that never finishes answering must not hold one of the four work slots for good.
+  const timer = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const res = await fetch(url, { credentials: 'omit', cache: 'force-cache', signal: ctl.signal });
+    if (!res.ok) return null;
+    if ((+res.headers.get('content-length') || 0) > maxBytes) { ctl.abort(); return null; }
+    const reader = res.body.getReader(), chunks = [];
+    let n = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      n += value.length;
+      if (n > maxBytes) { ctl.abort(); return null; }
+      chunks.push(value);
+    }
+    return new Blob(chunks, { type: (res.headers.get('content-type') || '').split(';')[0].trim() });
+  } finally {
+    clearTimeout(timer);
   }
-  return new Blob(chunks, { type: (res.headers.get('content-type') || '').split(';')[0].trim() });
 }
 
 async function load(url, maxBytes) {
@@ -221,7 +227,7 @@ browser.runtime.onMessage.addListener((msg, sender) => {
     case 'bgimg':
       return cached(bgCache, msg.url, recolour, '');
     case 'fetch-css':
-      return fetch(msg.url).then(r => (r.ok ? r.text() : '')).catch(() => '');
+      return fetch(msg.url, { signal: AbortSignal.timeout(20000) }).then(r => (r.ok ? r.text() : '')).catch(() => '');
     case 'css':
       return applyCss(sender, msg.code).catch(() => {});
     case 'get':

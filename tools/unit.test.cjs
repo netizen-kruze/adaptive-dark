@@ -55,6 +55,9 @@ test('transform: literals, variables, fallbacks, Tailwind alpha, strings untouch
   assert.match(A.transform('#ffffff', 'bg', e), /^#1[0-9a-f]1[0-9a-f]1[0-9a-f]$/); assert.ok(e.found);
   e = env(['--x']);
   assert.equal(A.transform('var(--x)', 'fg', e), 'var(--adm-fg--x, var(--x))');
+  // light-dark(): the light value is the one the page was designed around; it is mapped, the dark one dropped
+  assert.equal(A.transform('light-dark( #ffffff, #000000)', 'bg', { found: false }), A.transform('#ffffff', 'bg', { found: false }));
+  assert.equal(A.transform('light-dark(#000, #fff)', 'fg', { found: false }), A.transform('#000', 'fg', { found: false }));
   e = env();
   assert.match(A.transform('var(--nope, #fff)', 'bg', e), /^var\(--nope,\s*#1/); assert.ok(e.found);
   e = env();
@@ -184,14 +187,16 @@ test('decideImage: glyphs, line art, photos, thin strokes, textures', () => {
     const v = Math.round(hi - (hi - lo) * (Math.hypot(x - cx + 6, y - cy + 6) / (r + 6)));   // lit from top-left
     return [v, v, v, 255];
   });
-  assert.equal(A.decideImage(ball(24, 24, 16, 150, 250, [255, 255, 255, 255]), 'img'), false, 'white product on white is a photo');
-  assert.equal(A.decideImage(ball(24, 24, 16, 8, 120, [255, 255, 255, 255]), 'img'), false, 'black product on white is a photo');
+  // 'dim' = kept as it is, not inverted; only dimmed where the page shows it huge with text on top
+  assert.equal(A.decideImage(ball(24, 24, 16, 150, 250, [255, 255, 255, 255]), 'img'), 'dim', 'white product on white is a photo (mostly white: may be dimmed as a backdrop)');
+  assert.equal(A.decideImage(ball(24, 24, 16, 8, 120, [255, 255, 255, 255]), 'img'), 'dim', 'black product on white is a photo');
   assert.equal(A.decideImage(ball(24, 24, 16, 8, 120, [0, 0, 0, 0]), 'img'), false, 'dark cut-out product is a photo');
-  assert.equal(A.decideImage(lineArt, 'img', true), false, 'a JPEG <img> is never inverted');
+  assert.equal(A.decideImage(lineArt, 'img', true), 'dim', 'a JPEG <img> is never inverted');
+  assert.equal(A.decideImage(photo, 'img', true), false, 'a colourful photo without a white ground is simply kept');
   assert.equal(A.decideImage(lineArt, 'bg', true), true, 'the JPEG rule does not apply to background images');
   const haze = sample((x, y) => { const v = 226 + ((x * 3 + y * 5) % 17); return [v, v - 2, v - 3, 255]; });   // pale, soft, featureless
   assert.equal(A.decideImage(haze, 'img', true), 'backdrop', 'a pale featureless JPEG is a candidate backdrop');
-  assert.equal(A.decideImage(ball(24, 24, 16, 150, 250, [255, 255, 255, 255]), 'img', true), false, 'a white product photo is not a backdrop');
+  assert.equal(A.decideImage(ball(24, 24, 16, 150, 250, [255, 255, 255, 255]), 'img', true), 'dim', 'a white product photo is not a backdrop to invert');
   // Drawings keep being recognised: anti-aliased strokes and a diagram with flat grey boxes.
   const soften = sample((x, y) => { const e = Math.min(x % 12, 12 - (x % 12)); return e === 0 ? [0, 0, 0, 255] : e === 1 ? [128, 128, 128, 255] : [255, 255, 255, 255]; });
   const boxes = sample((x, y) => (x % 16 === 0 || y % 16 === 0 ? [0, 0, 0, 255] : (x > 16 && x < 32 && y > 16 && y < 32 ? [210, 210, 210, 255] : [255, 255, 255, 255])));

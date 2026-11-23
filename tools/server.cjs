@@ -140,6 +140,72 @@ function start(A, B) {
       <div id="card"><span id="ink">ink from an @property default</span></div>
       <div id="inlinevar" style="--fill: #FFF9F5; background: var(--fill)">inline shorthand with a variable</div>
     </body></html>`);
+    // A widget that puts its own inline style back the moment anyone changes it (the rating
+    // stars on costco.com). Without a guard the extension and the page bounce without end.
+    if (u.pathname === '/style-fight.html') return send('text/html', `<!doctype html><html><head><title>fight</title><style>body{background:#fff;color:#111}</style></head><body>
+      <div id="plain">plain</div>
+      <svg width="120" height="24"><defs><linearGradient id="g"><stop offset="0" stop-color="#ca4d00"/></linearGradient></defs><polygon id="star" points="0,0 24,0 12,22"/></svg>
+      <script>
+        window.__resets = 0;
+        setTimeout(() => {
+          const el = document.getElementById('star'), mine = 'fill: url("#g") !important; stroke: rgb(202, 77, 0);';
+          el.setAttribute('style', mine);
+          new MutationObserver(() => { if (el.getAttribute('style') !== mine) { window.__resets++; el.setAttribute('style', mine); } })
+            .observe(el, { attributes: true, attributeFilter: ['style'] });
+        }, 300);
+      </script></body></html>`);
+    // A widget that answers any change to its inline style by replacing itself with a fresh copy.
+    // Every round is a new element, so only the extension's overall safety net can end it.
+    if (u.pathname === '/storm.html') return send('text/html', `<!doctype html><html><head><title>storm</title><style>body{background:#fff;color:#111}</style></head><body>
+      <div id="plain">plain</div><div id="box"></div>
+      <script>
+        window.__swaps = 0;
+        setTimeout(() => {
+          const box = document.getElementById('box'), mine = 'background-color: #ffffff; color: #111111';
+          const make = () => { const d = document.createElement('div'); d.setAttribute('style', mine); d.textContent = 'widget'; return d; };
+          let cur = make(); box.appendChild(cur);
+          new MutationObserver(() => { if (cur.getAttribute('style') !== mine) { window.__swaps++; const n = make(); cur.replaceWith(n); cur = n; } })
+            .observe(box, { attributes: true, subtree: true, attributeFilter: ['style'] });
+        }, 300);
+      </script></body></html>`);
+    // Cases found by the deep sweep (duolingo.com, agoda.com, figma.com, notion.com, lenovo.com).
+    if (u.pathname === '/deep-cases.html') {
+      const htmlVars = Array.from({ length: 500 }, (_, i) => `--tok-${i}: ${240 - (i % 5)}, ${240 - (i % 7)}, ${236 + (i % 9)}`).join('; ');
+      const theme = (cls, base) => `.${cls}{${Array.from({ length: 150 }, (_, i) => `--t-${i}:#${base}${(240 + (i % 16)).toString(16)}`).join(';')}}`;
+      return send('text/html', `<!doctype html><html style="${htmlVars}"><head><title>deep</title>
+        <link rel="stylesheet" href="http://127.0.0.1:${B}/imp-main.css">
+        <style>
+          body{background:#fff;color:#111}
+          #tok{background:rgb(var(--tok-7));color:rgb(20, 20, 20)}
+          ${theme('theme-a', 'fafa')} ${theme('theme-b', 'f4f4')} ${theme('theme-c', 'eeee')}
+          #themed{background:var(--t-3)}
+          .lightpart{color-scheme:light}
+          .fade{height:40px;background:#fff;mask-image:linear-gradient(to bottom, black 75%, transparent)}
+        </style></head><body>
+        <div id="plain">plain</div>
+        <div id="tok">colour tokens kept on the html element</div>
+        <div class="theme-a"><div id="themed">theme in use</div></div>
+        <div id="later"><div id="themed2" style="background:var(--t-5)">theme applied later</div></div>
+        <div style="color-scheme: light"><button id="btn1">inline light scheme</button></div>
+        <div class="lightpart"><button id="btn2">light scheme by rule</button></div>
+        <div id="fade" class="fade">box with faded edge</div>
+        <h2 id="imp" style="color: var(--pure-dark)">variable from an imported cross-origin sheet</h2><div id="impbox">box</div>
+        <svg width="0" height="0"><defs><path id="ic" d="M0 0h10v10H0z" fill="#111111"/></defs></svg>
+        <svg width="20" height="20"><use href="#ic"/></svg><svg width="20" height="20"><use href="#ic"/></svg>
+        <details><summary>details</summary>text</details><video controls width="120" height="40"></video>
+      </body></html>`);
+    }
+    // A mostly white picture used as a backdrop with text on top (nvidia.com), and the same picture on its own.
+    if (u.pathname === '/whitephoto.svg') return send('image/svg+xml', '<svg xmlns="http://www.w3.org/2000/svg" width="900" height="500"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e33"/><stop offset="0.5" stop-color="#3c3"/><stop offset="1" stop-color="#33e"/></linearGradient></defs><rect width="900" height="500" fill="#fff"/><rect x="600" y="60" width="260" height="380" fill="url(#g)"/></svg>');
+    if (u.pathname === '/backdrop-photo.html') return send('text/html', `<!doctype html><html><head><title>backdrop</title><style>
+      body{margin:0;background:#fff;color:#111}
+      .hero{position:relative;height:500px}
+      .hero img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+      .copy{position:relative;padding:60px} .copy p{height:300px;font-size:24px}
+    </style></head><body>
+      <div class="hero"><img id="back" src="/whitephoto.svg"><div class="copy"><h1 id="head">Headline over a white picture</h1><p>Text over it as well, tall enough to be found under more than one of the sample points.</p></div></div>
+      <img id="alone" src="/whitephoto.svg?alone" style="display:block;width:900px;height:500px">
+    </body></html>`);
     if (u.pathname === '/slow.html') {
       // Head arrives immediately, body 2.5 s later: the window should be dark for the whole wait.
       res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
@@ -154,6 +220,9 @@ function start(A, B) {
   });
   const b = http.createServer((req, res) => {
     if (req.url.startsWith('/cross.css')) { res.writeHead(200, { 'Content-Type': 'text/css' }); return res.end(CROSS_CSS); }
+    // a cross-origin sheet whose colour variables live in a file it imports
+    if (req.url.startsWith('/imp-main.css')) { res.writeHead(200, { 'Content-Type': 'text/css' }); return res.end('@import url("imp-vars.css");#impbox{background:var(--imp-bg)}'); }
+    if (req.url.startsWith('/imp-vars.css')) { res.writeHead(200, { 'Content-Type': 'text/css' }); return res.end(':root{--pure-dark:#000;--imp-bg:#fff}'); }
     if (req.url.startsWith('/lineart.svg')) { res.writeHead(200, { 'Content-Type': 'image/svg+xml' }); return res.end(SVG_LINEART); }
     if (req.url.startsWith('/inner.html')) { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(INNER); }
     res.writeHead(404); res.end();

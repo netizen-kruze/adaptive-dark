@@ -4,9 +4,9 @@ Firefox extension (Manifest V2) that darkens light-only websites, modelled on Sa
 The extension is in `extension/`, the tests in `tools/`. This file records what has been tested, how the design
 maps to what Apple published, and the Firefox behaviours that cost time to discover.
 
-## Status: v0.4.0 (2026-11-17), tested in Firefox 160 on Windows 11
+## Status: v0.5.0 (2026-11-23), tested in Firefox 160 on Windows 11
 - `npx web-ext lint`: 0 errors, 0 warnings.
-- 12 unit tests (Node) and 133 end-to-end checks (real Firefox, headless) pass.
+- 12 unit tests (Node) and 150 end-to-end checks (real Firefox, headless) pass.
 - 19 real sites load with no extension errors in the Browser Console.
 - Real-screen sampling (165 samples/s, visible window, dark Firefox theme): 0 light frames across 9 navigations.
 - Not machine-testable: the physical Alt+Shift+D key press (its handler and registration are tested).
@@ -38,6 +38,38 @@ maps to what Apple published, and the Firefox behaviours that cost time to disco
   Known and not fixed: light text over a light <video> (ui.com hero); one WebP product shot (raspberrypi.com);
   `Promise resolved while context is inactive` console lines when a tab navigates mid-message.
 
+- Freeze on costco.com product pages (0.4.1): a reviews widget (Bazaarvoice) restores its inline style from its
+  own MutationObserver; our rewrite and its restore alternated inside one microtask checkpoint, for ever.
+  `fought()` counts rewrites of one element per uninterrupted burst and leaves the element to the page after 12.
+
+- Deep sweep (0.5.0): `sweep-shards.cjs` over `sites-deep.json` (150 shops, widget-heavy sites and sites with the
+  largest blocks in Dark Reader's `dynamic-theme-fixes.config`) plus `sites-wide.json`, with `INNER=2` (home page,
+  one article/product page, one section page; scrolled in steps). 850 pages: 576 darkened, 174 left alone, 94
+  blocked by bot checks, 6 probe errors, 0 frozen, 0 switched off by the safety net; longest single restyle
+  783 ms (etsy.com), most total work 1.7 s (worldcubeassociation.org, 148 restyles). Found and fixed, with
+  fixtures in `/deep-cases.html`, `/backdrop-photo.html`, `/storm.html`, `/style-fight.html`:
+  - our own inline writes came back as one `style` mutation record per property and each re-ran `processInline`
+    on the whole element; `<html style>` with 300 colour variables cost 4.9 s (duolingo.com). `ownStyle` remembers
+    the attribute after our write, and a batch processes each element once. Now 0.17 s.
+  - `openOrClosedShadowRoot` also returns the browser's own shadow trees (SVG `<use>`, video controls, details);
+    they were scanned, observed and given scopes. Only valid author shadow hosts are looked at now (`SHADOW_HOST`).
+  - 36 theme classes x 1300 variables x 4 twins = 16 MB of overrides (agoda.com). Rules with 100+ items are
+    only emitted while their selector matches something in the document (`e.big`, re-checked on every restyle).
+  - hundreds of `<link>` load events and style insertions during load each forced an immediate restyle
+    (salesforce.com: 531 restyles). `rebuildSoon()`: immediate at most once per 30 ms, never on a busy page.
+  - `color-scheme: light` on a container (inline on figma.com) gave buttons black system text -> overridden to dark.
+  - cross-origin sheet rebuilt from text lost its `@import`s, and with them the colour variables (lenovo.com)
+    -> `corsEntries()` fetches imports (3 levels, 30 files).
+  - `mask-image: linear-gradient(...)` (a faded edge, notion.com) made the box an "icon" -> only image masks count.
+  - large, mostly white `<img>` used as a backdrop with text over it (nvidia.com, microsoft.com/microsoft-365):
+    `decideImage` returns `'dim'` (near-white over 45% of the picture, not inverted); the content script applies
+    `brightness(0.38)` only when the picture covers a third of the window and `textOver()` finds text above it.
+  - `light-dark(a, b)` resolved to `b` under our forced dark scheme: the site's own half-finished dark palette
+    (coursera.org, black on navy) -> the light value is taken and mapped.
+  Seen and not fixed: light CSS background photos behind text (arduino.cc product page, netlify.com hero; too
+  large for `recolour`); sites that declare `light dark` but render light (ulta.com, redhat.com, docs.stripe.com,
+  openstreetmap.org) are left alone by the Safari contract, Force dark handles them.
+
 ## How to test (run from `tools/`; `npm install` once; set `FIREFOX_BIN` if Firefox is not in the default Windows location)
 - `npm test` — unit tests, `e2e.cjs` (fixtures served by `server.cjs`), then lint. Exit code 0 = pass.
 - `npm run sites` / `node harness.cjs <ext> <out> sites dark|light` (env `SITES=sites2.json` for the second list).
@@ -46,6 +78,10 @@ maps to what Apple published, and the Firefox behaviours that cost time to disco
 - `node perf-work.cjs <ext>` — rebuild count and longest pause per site. `node perf.cjs <ext>` — load-time delta.
 - `npm run sweep` then `node sweep-report.cjs out/sweep` (add a `node sweep.cjs none out/sweep` baseline first) and
   `node sheet.cjs out/sweep/sweep-addon-dark.json out/sweep/sheets` for contact sheets of every inverted image.
+- Deep sweep (PowerShell): `$env:INNER='2'; node sweep-shards.cjs none out/deep 4 sites-deep.json sites-wide.json`
+  (baseline, also picks the inner pages), then without INNER
+  `node sweep-shards.cjs ../extension out/deep 4 out/deep/pages.json`, then `node sweep-report.cjs out/deep`.
+  About 40 minutes per run with 4 browsers. A page that stops answering is logged as FROZEN and the browser restarted.
 - When adding a feature: add a fixture to `server.cjs` and an `ok(...)` check to `e2e.cjs`.
 
 ## What Apple published (webkit.org/blog/18541, 2026-11-03) and how this matches
@@ -92,12 +128,22 @@ Apple gives no algorithm or numbers except the WCAG 4.5:1 text target. Behaviour
 - `background.js` — settings (`enabledByDefault`, `followSystem`, `sites{host: bool}`, `force{host: true}`), placeholder CSS + boot
   script registration, live broadcast, image analysis (`analyze`) and recolouring (`recolour`, size-capped
   streaming fetch), `toggleSite` for the shortcut, CSP fallback.
-- `popup.html/js` — four switches and a status line (asks the page via `status` message).
+- `popup.html/js` — four switches, a status line (asks the page via `status` message) and "Copy a problem
+  report" (`status` with `detail: true`; text to the clipboard only, query string left out). `popup.html?for=<url>`
+  makes it act on the tab with that URL (used by the tests, which open the popup as a page).
+- Self-protection (content.js): every entry point is wrapped in `timed()`. Over 1 s of work in a 10 s window:
+  restyles are spaced at 4x the last restyle's duration. Over 5 s, or 2.5 s of uninterrupted back-and-forth with
+  page script in which we hold a fifth of the time (`sameBurst()`, a MessageChannel message marks "the browser
+  got a turn"): `giveUp()` -> teardown with reason `slow`, no restart until reload. A `<style>` of ours thrown
+  out of the document 6 times in 10 s moves to `tabs.insertCSS`. Background fetches time out (15 s / 20 s).
 
 ## Backlog
 - Per-element `color-scheme: only light` subtrees.
 - Source-text recovery inside `@import`ed sheets.
-- Text over light video / photo backdrops; WebP/AVIF product photos of dark objects.
+- Text over light video / CSS background photos (large `<img>` backdrops are dimmed since 0.5.0);
+  WebP/AVIF product photos of dark objects.
+- Decide whether pages that declare `light dark` but are light on screen should be darkened without Force.
+- A readable sheet that `@import`s an unreadable (cross-origin) one: the import is skipped.
 - In-place CSSOM edits that keep the rule count.
 - Whole-shorthand overrides (`background: ...`) can beat a later page rule of equal specificity for the
   non-colour parts (repeat/size/position).

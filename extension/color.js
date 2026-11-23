@@ -306,6 +306,14 @@ var ADM = (() => {
       }
       return `var(${name}${fb})`;
     }
+    if (lw === 'light-dark') {
+      // The dark colour scheme is forced on the page, which would switch light-dark() to its second
+      // value: the site's own dark palette, on a site that has just been judged not to have a
+      // working one (coursera.com: black text on a navy band). Take the light value, the one the
+      // page was designed around, and map it like any other colour.
+      const parts = splitTop(inner, c => c === ',');
+      if (parts.length === 2) return transform(parts[0].trim(), role, env);
+    }
     if (COLOR_FNS.has(lw)) {
       const dynamic = inner.includes('var(') || /currentcolor/i.test(inner);
       if (!dynamic) {
@@ -461,7 +469,9 @@ var ADM = (() => {
     for (const it of items) {
       if (it.v.length > 400000) continue;      // absurdly large value (embedded file): not worth the time
       const imp = it.i || forceImportant ? ' !important' : '';
-      if (it.blend) {
+      if (it.fixed) {
+        body += `${it.p}:${it.v}${imp};`;       // a replacement value decided by the caller (color-scheme)
+      } else if (it.blend) {
         // multiply/darken assume a white page underneath; on a dark page they black the element out
         body += `mix-blend-mode:normal${imp};`;
       } else if (it.info) {
@@ -600,18 +610,22 @@ var ADM = (() => {
     // One exception: a pale, colourless, featureless picture. If the page shows it very large it is
     // a backdrop with text on top (the content script checks the size), not something to look at.
     const backdrop = kind !== 'bg' && clear / n < 0.1 && sumL / ink > 0.85 && sumC / ink < 0.08 && low / ink < 0.01 ? 'backdrop' : false;
-    if (kind !== 'bg' && (jpeg || shaded(d, ink))) return backdrop;
+    // A picture that is kept as it is but is near-white over much of its area ('dim'): a photo on
+    // a white ground, say. Shown very large with text on top of it, the text (now light) would
+    // be lost, so the content script dims the picture in that one situation.
+    const pale = kind !== 'bg' && clear / n < 0.1 && light / ink > 0.45 ? 'dim' : false;
+    if (kind !== 'bg' && (jpeg || shaded(d, ink))) return backdrop || pale;
     // On transparency (logos, icons): invert when most of the ink is black/grey, even if a
     // coloured emblem sits beside it (invert + hue-rotate keeps the emblem's hue).
     if (clear / n > 0.1) return darkInk / ink > 0.5;
-    if (sumC / ink > 0.12) return false;                        // colourful: photo or brand art, keep
+    if (sumC / ink > 0.12) return pale;                         // colourful: photo or brand art, keep
     const top = hist.slice().sort((a, b) => b - a);
     // flat, mostly white with some dark ink: diagrams, scans, black-on-white logos
     if ((top[0] + top[1]) / ink >= 0.8 && light / ink > 0.55 && dark / ink > 0.02) return true;
     // colourless and bright all over: a light texture or gradient strip behind text (backgrounds),
     // or a near-white banner / pale wordmark (<img>, stricter so greyscale photos are kept)
     // An <img> must be pale throughout: a white object photographed on white has darker details.
-    return kind === 'bg' ? sumL / ink > 0.8 : (sumL / ink > 0.92 && low / ink < 0.01) || backdrop;
+    return kind === 'bg' ? sumL / ink > 0.8 : (sumL / ink > 0.92 && low / ink < 0.01) || backdrop || pale;
   }
 
   // True when a square RGBA sample contains shading. Looks only at smooth spots (a pixel whose

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Adaptive Dark",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Darkens light-only websites: OKLCH lightness inversion with hue kept, stylesheet-level rewriting, smart image handling.",
   "permissions": ["<all_urls>", "storage", "tabs"],
   "background": { "scripts": ["color.js", "background.js"] },

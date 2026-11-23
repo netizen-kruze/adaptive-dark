@@ -105,8 +105,14 @@
     // An element with a mask is an icon: its "background" is really the ink colour.
     const roleFor = p => {
       if (p !== 'background-color' && p !== 'background') return undefined;
-      if (masked === null) {   // a real mask (not "all: initial" or "mask: none")
-        masked = ['mask-image', '-webkit-mask-image', 'mask'].some(k => { const v = st.getPropertyValue(k).trim(); return !!v && !/^(none|initial|unset|inherit|revert|revert-layer)\b/i.test(v); });
+      if (masked === null) {
+        // A real mask (not "all: initial" or "mask: none") made from an image. A mask that is only
+        // gradients fades the edges of an ordinary box (notion.com), whose background stays a background.
+        masked = ['mask-image', '-webkit-mask-image', 'mask'].some(k => {
+          const v = st.getPropertyValue(k).trim();
+          if (!v || /^(none|initial|unset|inherit|revert|revert-layer)\b/i.test(v)) return false;
+          return /url\(|image-set\(|element\(/i.test(v) || !/gradient\(/i.test(v);
+        });
       }
       return masked ? 'fg' : undefined;
     };
@@ -119,6 +125,13 @@
         const info = A.analyzeCustom(v);
         addCustom(p, v, info);
         if (info.color || info.refs.length) items.push({ p, v, i: st.getPropertyPriority(p) === 'important', info });
+        continue;
+      }
+      if (p === 'color-scheme') {
+        // A part of the page that asks for the light scheme gets the browser's light defaults
+        // (black button text, white form fields) in the middle of a darkened page.
+        const v = st.getPropertyValue(p);
+        if (/\blight\b/i.test(v) && !/\bdark\b/i.test(v)) items.push({ p, v: 'dark', fixed: true, i: st.getPropertyPriority(p) === 'important' });
         continue;
       }
       if (p === 'mix-blend-mode') {
@@ -155,11 +168,12 @@
     const lost = d.entries.filter(e => e.lost);
     if (!lost.length || !text) return false;
     const found = A.lossyDecls(text);
+    const keys = found.map(f => normSel(f.sel || ''));   // once each: a big sheet has thousands
     let k = 0, hit = false;
     for (const e of lost) {             // both lists are in document order: match forward by selector
       const want = normSel(e.sel);
       for (let j = k; j < found.length; j++) {
-        if (normSel(found[j].sel) !== want) continue;
+        if (keys[j] !== want) continue;
         e.items = e.items.concat(found[j].items); e.lost = false;
         k = j + 1; hit = true;
         break;
@@ -177,6 +191,13 @@
     p.then(text => { if (applySource(d, text) && active) scheduleRebuild(); });
   }
 
+  // Design-token sites ship every colour theme they have, each a rule with a thousand or more
+  // variables (agoda.com: 36 themes, 16 MB of overrides, one theme in use). A rule that large is
+  // only overridden while its selector matches something in the document; see genSheet().
+  const BIG_BLOCK = 100;
+  const inStyleRule = r => { for (let p = r.parentRule; p; p = p.parentRule) if (p.type === 1) return true; return false; };
+  const matchesNow = sel => { try { return !!document.querySelector(sel); } catch (e) { return true; } };
+
   function extract(rules, open, depth, base, out) {
     for (let i = 0; i < rules.length; i++) {
       const r = rules[i], type = r.type;
@@ -185,7 +206,11 @@
           lostFlag = false;
           const items = readStyle(r.style);
           const lost = lostFlag;
-          if (items.length || lost) out.push({ open, close: '}'.repeat(depth), sel: r.selectorText, items, base, lost });
+          if (items.length || lost) {
+            const e = { open, close: '}'.repeat(depth), sel: r.selectorText, items, base, lost };
+            if (items.length >= BIG_BLOCK && !inStyleRule(r) && !/::|:hover|:focus|:active|:host|&/.test(e.sel)) e.big = true;
+            out.push(e);
+          }
           if (r.cssRules && r.cssRules.length) extract(r.cssRules, open + r.selectorText + '{', depth + 1, base, out);
         } else if (type === 3) {                             // @import
           const ss = r.styleSheet;
@@ -227,19 +252,40 @@
     return { sig, entries: out, css: '', ver: -1, force: false };
   }
 
+  // A cross-origin sheet is rebuilt from its text, and a sheet built that way does not load its
+  // @imports. Sites keep their colour variables in exactly such an imported file (lenovo.com), so
+  // the imports are fetched too: up to 3 levels deep and 30 files, imported rules first.
+  const IMPORT_RE = /@import\s+(?:url\(\s*(?:"([^"]+)"|'([^']+)'|([^'")\s]+))\s*\)|"([^"]+)"|'([^']+)')([^;]*);/gi;
+  async function corsEntries(href, mediaText, depth, seen) {
+    if (seen.has(href) || seen.size >= 30) return { entries: [], text: '' };
+    seen.add(href);
+    const text = await send({ type: 'fetch-css', url: href });
+    if (!text) return { entries: [], text: '' };
+    let entries = [];
+    if (depth < 3 && text.includes('@import')) {
+      for (const m of text.replace(/\/\*[\s\S]*?\*\//g, ' ').matchAll(IMPORT_RE)) {
+        let u;
+        try { u = new URL(m[1] || m[2] || m[3] || m[4] || m[5], href).href; } catch (e) { continue; }
+        const cond = (m[6] || '').trim();                       // media query, or layer()/supports() (not modelled)
+        const sub = await corsEntries(u, cond && !/layer|supports/i.test(cond) ? cond : mediaText, depth + 1, seen);
+        entries = entries.concat(sub.entries);
+      }
+    }
+    const ss = new CSSStyleSheet();
+    ss.replaceSync(text);
+    return { entries: entries.concat(buildData(ss.cssRules, mediaText, href, '').entries), text };
+  }
+
   function corsData(href, mediaText) {
     const key = href + '|' + mediaText;
     let d = corsCache.get(key);
     if (!d) {
       d = { sig: '', entries: [], css: '', ver: -1, force: false };
       corsCache.set(key, d);
-      send({ type: 'fetch-css', url: href }).then(text => {
-        if (!text) return;
-        const ss = new CSSStyleSheet();
-        ss.replaceSync(text);
-        const nd = buildData(ss.cssRules, mediaText, href, '');
-        d.entries = nd.entries; d.ver = -1;
-        applySource(d, text);
+      corsEntries(href, mediaText, 0, new Set()).then(r => {
+        if (!r.text) return;
+        d.entries = r.entries; d.ver = -1;
+        applySource(d, r.text);
         if (active) scheduleRebuild();
       }).catch(() => {});
     }
@@ -262,10 +308,15 @@
     return d;
   }
 
-  function genSheet(d, force) {
-    if (d.ver === varsVer && d.force === force) return d.css;
+  function genSheet(d, force, doc) {
+    if (doc) {                          // big blocks: is each one in use right now?
+      if (d.bigs === undefined || d.bigsOf !== d.entries) { d.bigs = d.entries.filter(e => e.big); d.bigsOf = d.entries; }
+      for (const e of d.bigs) { const live = matchesNow(e.sel); if (live !== e.live) { e.live = live; d.ver = -1; } }
+    }
+    if (d.ver === varsVer && d.force === force && d.doc === doc) return d.css;
     let css = '';
     for (const e of d.entries) {
+      if (doc && e.live === false) continue;
       const env = { colorVars, composite, base: e.base, docBase: document.baseURI, bg: bgLookup };
       if (e.kf) {
         let any = false, inner = '';
@@ -291,13 +342,13 @@
       if (body) css += e.open + e.sel + '{' + body + '}' + e.close + '\n';
       if (top) css += e.open + '@layer{' + e.sel + '{' + top + '}}' + e.close + '\n';
     }
-    d.css = css; d.ver = varsVer; d.force = force;
+    d.css = css; d.ver = varsVer; d.force = force; d.doc = doc;
     return css;
   }
 
   // ------------------------------------------------------------------ scopes (document + shadow roots)
   class Scope {
-    constructor(root) { this.root = root; this.isDoc = root === document; this.el = null; this.css = null; this.viaApi = false; }
+    constructor(root) { this.root = root; this.isDoc = root === document; this.el = null; this.css = null; this.viaApi = false; this.lost = 0; this.lostT0 = 0; }
 
     collect() {
       const list = [];
@@ -320,9 +371,18 @@
 
     render(list) {
       let css = this.isDoc ? BASE_CSS + linkCss() : '';
-      for (const [d, force] of list) css += genSheet(d, force);
+      for (const [d, force] of list) css += genSheet(d, force, this.isDoc);
       const parent = this.isDoc ? document.documentElement : this.root;
-      if (!this.viaApi && this.el && (this.el.parentNode !== parent || this.el.nextElementSibling)) this.css = null; // must stay last
+      if (!this.viaApi && this.el && (this.el.parentNode !== parent || this.el.nextElementSibling)) {
+        this.css = null;                // must stay last
+        // A page that keeps throwing our <style> out would flicker between light and dark for as
+        // long as it is open. After a few rounds, hand the CSS to the browser, out of the page's reach.
+        if (this.isDoc && this.el.parentNode !== parent) {
+          const now = performance.now();
+          if (now - this.lostT0 > 10000) { this.lostT0 = now; this.lost = 0; }
+          if (++this.lost > 5) { this.viaApi = true; this.el.remove(); this.el = null; }
+        }
+      }
       if (css === this.css) return;
       this.css = css;
       if (this.isDoc) stats.css = css.length;
@@ -350,17 +410,62 @@
     }
   }
 
+  // ------------------------------------------------------------------ self-protection
+  // Whatever a page does, this script must not be what makes it slow. All of its work is timed:
+  //  - past BUSY_MS of work inside one 10 s window, restyling is spaced out (at most ~20% of the time);
+  //  - past LIMIT_MS, or when the page and this script keep answering each other without the
+  //    browser getting a turn for STORM_MS, it switches itself off for this page ("slow").
+  const WINDOW_MS = 10000, BUSY_MS = 1000, LIMIT_MS = 5000, STORM_MS = 2500;
+  const load = { t0: 0, ms: 0, total: 0 };
+  let gaveUp = false, timing = 0, lastMs = 0, lastEnd = 0;
+  function spent(dt) {
+    const now = performance.now();
+    if (now - load.t0 > WINDOW_MS) { load.t0 = now; load.ms = 0; }
+    load.ms += dt; load.total += dt;
+    if (load.ms > LIMIT_MS && active) giveUp();
+  }
+  function giveUp() {
+    if (gaveUp) return;
+    gaveUp = true;
+    teardown('slow');
+  }
+  // Wraps an entry point so that its time is counted once (nested calls are part of the outer one).
+  const timed = fn => arg => {
+    if (timing) return fn(arg);
+    timing++;
+    const t0 = performance.now();
+    try { return fn(arg); } finally { timing--; spent(performance.now() - t0); }
+  };
+  // "Has the browser had a turn since?" A message to ourselves is delivered as a task of its own
+  // (and, unlike a timer, is not held back in background tabs); until it arrives we are still
+  // inside the same uninterrupted burst of page script and observer callbacks.
+  let turnPending = false, burstT0 = 0, burstCalls = 0, burstOwn = 0;
+  const fights = new Map();            // element -> inline rewrites during the current burst
+  let turn = null;
+  try { turn = new MessageChannel(); turn.port1.onmessage = () => { turnPending = false; fights.clear(); }; } catch (e) {}
+  function sameBurst() {
+    const now = performance.now();
+    if (!turnPending) {
+      turnPending = true; burstT0 = now; burstCalls = 0; burstOwn = 0;
+      if (turn) turn.port2.postMessage(0); else setTimeout(() => { turnPending = false; fights.clear(); }, 0);
+    }
+    return now - burstT0;
+  }
+
   // Work counters, reported through the popup's status request (and used by the perf test).
-  const stats = { rebuilds: 0, ms: 0, maxMs: 0, css: 0 };
-  function rebuildAll() {
+  const stats = { rebuilds: 0, ms: 0, maxMs: 0, css: 0, stubborn: 0 };
+  const rebuildAll = timed(() => {
     if (!active) return;
     const t0 = performance.now();
     try { rebuildInner(); } finally {
       const dt = performance.now() - t0;
+      lastMs = dt; lastEnd = t0 + dt;
       stats.rebuilds++; stats.ms += dt; if (dt > stats.maxMs) stats.maxMs = dt;
-      if (PERF_ATTR) document.documentElement.setAttribute('data-adm-perf', `${stats.rebuilds}/${Math.round(stats.ms)}/${Math.round(stats.maxMs)}/${stats.css}`);
+      if (PERF_ATTR) document.documentElement.setAttribute('data-adm-perf', `${stats.rebuilds}/${Math.round(stats.ms)}/${Math.round(stats.maxMs)}/${stats.css}/${Math.round(load.total)}`);
     }
-  }
+  });
+  // While this page is costing us a lot, leave gaps of four times the last restyle between restyles.
+  const pace = () => (load.ms > BUSY_MS && performance.now() - load.t0 <= WINDOW_MS ? Math.min(1500, Math.max(20, lastMs * 4)) : 20);
   function rebuildInner() {
     const plans = [];
     for (const sc of scopes.values()) {
@@ -388,8 +493,14 @@
     clearTimeout(rebuildTimer); rebuildTimer = 0;
     rebuildAll();
   }
+  // "Now" for a stylesheet that has just become active (a light frame could be painted otherwise),
+  // but not more than once per 30 ms and not on a page that has already cost a lot: some pages
+  // deliver hundreds of style sheets one by one.
+  function rebuildSoon() {
+    if (load.ms <= BUSY_MS && performance.now() - lastEnd > 30) rebuildNow(); else scheduleRebuild();
+  }
   function scheduleRebuild() {
-    if (!rebuildTimer) rebuildTimer = setTimeout(() => { rebuildTimer = 0; rebuildAll(); }, 20);
+    if (!rebuildTimer) rebuildTimer = setTimeout(() => { rebuildTimer = 0; rebuildAll(); }, pace());
   }
 
   // ------------------------------------------------------------------ inline styles + legacy attributes
@@ -414,16 +525,31 @@
   const ATTR_MAP = { bgcolor: 'background-color', text: 'color', color: 'color', fill: 'fill', stroke: 'stroke', 'stop-color': 'stop-color' };
   const fixLegacy = v => (/^[0-9a-f]{6}$/i.test(v.trim()) ? '#' + v.trim() : v.trim());
 
+  // A page script that puts its own inline style back the moment we change it (the rating
+  // stars on costco.com do) would bounce with us without end inside one browser task and
+  // freeze the tab. After FIGHT_MAX rewrites of one element with no pause in between, the
+  // element is left to the page.
+  const FIGHT_MAX = 12;
+  const stubborn = new WeakSet();
+  const ownStyle = new WeakMap();      // element -> its style attribute right after our last write
+  function fought(el) {
+    sameBurst();
+    const n = (fights.get(el) || 0) + 1;
+    fights.set(el, n);
+    return n > FIGHT_MAX;
+  }
+
   function processInline(el) {
     const st = el.style;
-    if (!st || typeof st.getPropertyValue !== 'function') return;
+    if (!st || typeof st.getPropertyValue !== 'function' || stubborn.has(el)) return;
+    let wrote = false;
     const rec = inlineRecs.get(el) || new Map();
     const src = new Map(); // prop -> [value, priority, fromAttribute]
 
     for (let i = 0; i < st.length; i++) {
       const p = st[i];
       if (p.startsWith('--adm-')) continue;
-      if (!p.startsWith('--') && !A.PROPS[p]) continue;
+      if (!p.startsWith('--') && !A.PROPS[p] && p !== 'color-scheme') continue;
       const cur = st.getPropertyValue(p).trim();
       if (!cur) {
         // style="background: var(--x)": the longhands read empty, only the shorthand has the text.
@@ -470,6 +596,10 @@
         }
         continue;
       }
+      if (p === 'color-scheme') {         // style="color-scheme: light" on a container (figma.com): see readStyle
+        if (/\blight\b/i.test(v) && !/\bdark\b/i.test(v)) want.set(p, ['dark', prio, v]);
+        continue;
+      }
       let role = A.PROPS[p] || (A.SHORTHANDS[p] && A.SHORTHANDS[p][0]);
       if (p === 'fill' && el.localName === 'rect') role = 'bg';   // chart/diagram backdrops
       const e = { colorVars, found: false, bg: bgLookup, docBase: document.baseURI };
@@ -483,16 +613,24 @@
       const r = rec.get(p);
       if (r && r.val === val && st.getPropertyValue(p).trim() === r.mapped) { r.orig = orig; r.prio = prio; continue; }
       st.setProperty(p, val, prio);
+      wrote = true;
       rec.set(p, { val, mapped: st.getPropertyValue(p).trim(), orig, prio });
     }
     for (const [p, r] of rec) {
       if (want.has(p)) continue;
       if (st.getPropertyValue(p).trim() === r.mapped) {
         if (r.orig !== null) st.setProperty(p, r.orig, r.prio); else st.removeProperty(p);
+        wrote = true;
       }
       rec.delete(p);
     }
     if (rec.size) inlineRecs.set(el, rec); else { inlineRecs.delete(el); tidyAttr(el); }
+    if (!wrote) return;
+    if (fought(el)) { stubborn.add(el); stats.stubborn++; restoreInline(el); return; }
+    // Our own writes come back as "style changed" records, one per property. Remember what the
+    // attribute looks like now so those echoes are recognised and not processed again (an element
+    // with hundreds of inline colour variables was otherwise re-read once per variable).
+    ownStyle.set(el, el.getAttribute('style'));
   }
 
   // After our values are gone: if the style is what the page originally wrote (apart from
@@ -524,16 +662,18 @@
 
   // ------------------------------------------------------------------ images (<img> and SVG <image>)
   const INV = ATTR + '-inv';
-  function setInv(img, inv) {
-    const has = img.hasAttribute(INV);
-    if (inv && !has) {
-      if (img.style.filter) return;
-      img.setAttribute(INV, '');
-      img.style.setProperty('filter', 'invert(1) hue-rotate(180deg)');
-    } else if (!inv && has) {
+  function setInv(img, inv) {           // inv: false (leave) | true (invert) | 'dim'
+    const want = inv === 'dim' ? 'dim' : inv ? '' : null, has = img.getAttribute(INV);
+    if (want === has) return;
+    if (has !== null) {
       img.removeAttribute(INV);
       img.style.removeProperty('filter');
       if (!(img.getAttribute('style') || '').trim()) img.removeAttribute('style');
+    }
+    if (want !== null) {
+      if (img.style.filter) return;     // the page has its own filter on it
+      img.setAttribute(INV, want);
+      img.style.setProperty('filter', want === 'dim' ? 'brightness(0.38)' : 'invert(1) hue-rotate(180deg)');
     }
   }
   function imgUrl(img) {
@@ -556,10 +696,44 @@
       if (imgCache.size > 3000) imgCache.clear();
       imgCache.set(url, p);
     }
-    p.then(inv => { if (active && imgUrl(img) === url) setInv(img, inv === 'backdrop' ? isBackdrop(img) : !!inv); });
+    p.then(inv => {
+      if (!active || imgUrl(img) !== url) return;
+      if (inv === 'dim') { if (dimCands.size < 40) dimCands.add(img); return setInv(img, isBackdrop(img) && textOver(img) ? 'dim' : false); }
+      setInv(img, inv === 'backdrop' ? isBackdrop(img) : !!inv);
+    });
   }
   // A pale, featureless picture counts as a page backdrop when it fills a third of the window or more.
   const isBackdrop = img => { const r = img.getBoundingClientRect(); return r.width * r.height >= 0.33 * window.innerWidth * window.innerHeight; };
+  // Is text painted on top of this picture? Nine points across its visible part; two with a
+  // text-holding block over the picture are enough.
+  const dimCands = new Set();           // mostly-white pictures, looked at again when the page has settled
+  function textOver(img) {
+    const r = img.getBoundingClientRect();
+    const x0 = Math.max(r.left, 0), x1 = Math.min(r.right, window.innerWidth), y0 = Math.max(r.top, 0), y1 = Math.min(r.bottom, window.innerHeight);
+    if (x1 - x0 < 100 || y1 - y0 < 60) return false;
+    let hits = 0;
+    for (let i = 0; i < 3 && hits < 2; i++) for (let j = 0; j < 3 && hits < 2; j++) {
+      const stack = document.elementsFromPoint(x0 + (x1 - x0) * (i + 0.5) / 3, y0 + (y1 - y0) * (j + 0.5) / 3);
+      const at = stack.indexOf(img);
+      if (at < 1) continue;             // not there, or nothing above it
+      // stack[at - 1] is the nearest thing painted over the picture here; the ones before it are
+      // inside it or above it. Text anywhere inside it counts (a heading block laid over the picture).
+      const over = stack[at - 1];
+      if (OPAQUE_MEDIA.test(over.localName)) continue;
+      const tw = document.createTreeWalker(over, NodeFilter.SHOW_TEXT);
+      for (let n = tw.nextNode(), seen = 0; n && seen < 200; n = tw.nextNode(), seen++) {
+        if (n.nodeValue.trim().length > 2 && !/^(script|style)$/.test(n.parentNode.localName)) { hits++; break; }
+      }
+    }
+    return hits >= 2;
+  }
+  function recheckDim() {
+    for (const img of dimCands) {
+      if (!img.isConnected) { dimCands.delete(img); continue; }
+      if (img.getAttribute(INV) === '') continue;               // inverted for another reason since
+      setInv(img, isBackdrop(img) && textOver(img) ? 'dim' : false);
+    }
+  }
   const isImg = el => el.localName === 'img' || el.localName === 'image';
 
   // ------------------------------------------------------------------ DOM scanning
@@ -575,7 +749,14 @@
     }
   }
 
-  const shadowOf = el => el.openOrClosedShadowRoot || el.shadowRoot || null;   // Firefox exposes closed roots to extensions
+  // Firefox exposes closed shadow roots to extensions, and with them the browser's own internal
+  // ones: the copy behind every SVG <use>, video controls, <details>, form controls. Those are not
+  // the page's to style and are rebuilt by the browser whenever their source changes (an animated
+  // icon sprite made that thousands of rescans a second), so only elements a page can attach a
+  // shadow root to are looked at: custom elements and the few plain ones the standard allows.
+  const SHADOW_HOST = /^(article|aside|blockquote|body|div|footer|h[1-6]|header|main|nav|p|section|span)$/;
+  const shadowOf = el => (el.namespaceURI === 'http://www.w3.org/1999/xhtml' && (SHADOW_HOST.test(el.localName) || el.localName.includes('-'))
+    ? el.openOrClosedShadowRoot || el.shadowRoot || null : null);
   function findShadows(node) {
     if (node.nodeType === 1) { const sr = shadowOf(node); if (sr) attachScope(sr); }
     if (!node.firstElementChild) return;
@@ -588,7 +769,7 @@
     if (!active || !t || t.nodeType !== 1) return;
     // A stylesheet just became active: override it now, not 20 ms later, or the page's
     // own light colours can be painted for a frame.
-    if (t.localName === 'link') rebuildNow();
+    if (t.localName === 'link') rebuildSoon();
     else if (isImg(t)) checkImg(t);
   }
 
@@ -607,13 +788,25 @@
   }
 
   let metaChecked = false;
-  function onMutations(records) {
+  const onMutations = timed(records => {
     if (!active) return;
-    let dirty = false;
+    // The page and this script answering each other's changes with no pause: after STORM_MS of
+    // that, with a real share of the time spent here, stop taking part.
+    const t0 = performance.now(), stretch = sameBurst();
+    if (++burstCalls > 300 && stretch > STORM_MS && burstOwn > stretch * 0.2) return giveUp();
+    try { handleMutations(records); } finally { burstOwn += performance.now() - t0; }
+  });
+  function handleMutations(records) {
+    let dirty = false, seen = null;     // seen: element -> 'done' (processed in this batch) | 'own' (only our echo so far)
     for (const m of records) {
       const t = m.target;
       if (m.type === 'attributes') {
-        if (!isOurs(t)) processInline(t);
+        const st = seen && seen.get(t);
+        if (st !== 'done' && !isOurs(t)) {
+          if (!seen) seen = new Map();
+          if (m.attributeName === 'style' && (st === 'own' || ownStyle.get(t) === t.getAttribute('style'))) seen.set(t, 'own');
+          else { seen.set(t, 'done'); processInline(t); }
+        }
         if (m.attributeName.endsWith('link')) dirty = true;
       } else if (m.type === 'characterData') {
         const p = t.parentNode;
@@ -638,7 +831,9 @@
     }
     // While the page is still loading, new <style>/<link> elements are handled immediately
     // (same reason as in onLoad); afterwards changes are batched to keep CSS-in-JS pages cheap.
-    if (dirty) { if (document.readyState === 'loading') rebuildNow(); else scheduleRebuild(); }
+    // Not more than one immediate restyle per 30 ms, though (some pages deliver hundreds of style
+    // elements one by one), and a page that has already cost a lot is paced like any other.
+    if (dirty) { if (document.readyState === 'loading') rebuildSoon(); else scheduleRebuild(); }
   }
 
   // ------------------------------------------------------------------ "does this page look after itself?"
@@ -740,7 +935,9 @@
       } catch (e) {}
     }
     scopes.clear();
+    dimCands.clear();
     setState('off');
+    if (PERF_ATTR) document.documentElement.setAttribute('data-adm-why', why);
     if (why === 'dark' || why === 'declares') watchForChange();
   }
 
@@ -773,18 +970,19 @@
     if (themeObs) { themeObs.disconnect(); themeObs = null; }
   }
 
-  function checkpoint() {
+  const checkpoint = timed(() => {
     if (!active) return;
     const why = leaveAlone();
     if (why) return teardown(why);
     rebuildAll();
     findShadows(document.documentElement);
-  }
+    recheckDim();
+  });
 
   // ------------------------------------------------------------------ start / stop
   let loadHooks = false;
-  function start() {
-    if (active) return;
+  const start = timed(() => {
+    if (active || gaveUp) return;
     active = true;
     reason = '';
     metaChecked = false;
@@ -796,20 +994,21 @@
     findShadows(document.documentElement);
     rebuildAll();
     // CSS-in-JS libraries add rules through the CSSOM without touching the DOM, so poll cheaply.
-    pollTimer = setInterval(() => { if (!document.hidden) rebuildAll(); }, 700);
+    pollTimer = setInterval(() => { if (!document.hidden && performance.now() - lastEnd >= pace() * 6) rebuildAll(); }, 700);
 
     if (document.readyState === 'complete') { checkpoint(); return; }
     if (document.readyState === 'interactive') checkpoint();
     if (loadHooks) return;
     loadHooks = true;
-    document.addEventListener('DOMContentLoaded', checkpoint, { once: true });
+    document.addEventListener('DOMContentLoaded', () => checkpoint(), { once: true });
     window.addEventListener('load', () => { checkpoint(); setTimeout(checkpoint, 1500); }, { once: true });
-  }
+  });
 
   const darkMq = window.matchMedia('(prefers-color-scheme: dark)');
   let printing = false;
   const wanted = () => !!cfg && cfg.enabled && (!cfg.followSystem || darkMq.matches) && !printing;
   function evaluate() {
+    if (gaveUp) return;                 // switched itself off on this page; a reload starts afresh
     const why = printing ? 'print' : cfg && cfg.enabled ? 'system' : 'disabled';
     if (wanted()) {
       // Already running: settings may have changed (force switched off), so look at the page again.
@@ -828,7 +1027,19 @@
     if (!msg) return;
     if (msg.type === 'settings-changed') { refresh(); return; }
     if (msg.type === 'status' && window.top === window) {
-      return Promise.resolve({ on: active, reason, host: location.hostname, forced: active && !!(cfg && cfg.force) });
+      const r = { on: active, reason, host: location.hostname, forced: active && !!(cfg && cfg.force) };
+      if (msg.detail) {                 // for the popup's "copy a problem report"
+        let viaApi = false, shadows = 0;
+        for (const sc of scopes.values()) { if (sc.viaApi) viaApi = true; if (!sc.isDoc) shadows++; }
+        r.detail = {
+          page: location.origin + location.pathname, ready: document.readyState,
+          elements: document.getElementsByTagName('*').length, sheets: document.styleSheets.length, shadows,
+          frames: window.length, view: window.innerWidth + 'x' + window.innerHeight,
+          restyles: stats.rebuilds, workMs: Math.round(load.total), longestMs: Math.round(stats.maxMs), cssChars: stats.css,
+          vars: colorVars.size, leftToPage: stats.stubborn, viaApi, restarts,
+        };
+      }
+      return Promise.resolve(r);
     }
   });
 

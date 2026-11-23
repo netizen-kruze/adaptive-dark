@@ -15,6 +15,11 @@
   .hint.sub { margin-left: 48px; }
   p { color: #9aa0a6; font-size: 11px; margin: 10px 0 0; }
   hr { border: 0; border-top: 1px solid #3a3944; margin: 6px 0; }
+  button { font: inherit; color: #e8e6e3; background: #2b2a33; border: 1px solid #52525e; border-radius: 4px; padding: 5px 10px; margin: 6px 0 8px; cursor: pointer; }
+  button:hover { background: #3a3944; }
+  #report-hint { margin-left: 0; }
+  #report-text[hidden] { display: none; }
+  #report-text { width: 100%; height: 90px; box-sizing: border-box; margin-top: 6px; font: 11px/1.3 monospace; background: #15141a; color: #e8e6e3; border: 1px solid #3a3944; }
 </style>
 </head>
 <body>
@@ -30,6 +35,10 @@
   <label><input type="checkbox" id="sys"> <span>Follow light / dark mode</span></label>
   <div class="hint">On: sites are darkened only while Windows or Firefox is set to dark, and go back to normal when you switch to light. Off: always darkened.</div>
   <p>Sites that already have their own dark design are left alone. Alt+Shift+D switches the current site on or off.</p>
+  <hr>
+  <button id="report" type="button">Copy a problem report</button>
+  <div class="hint" id="report-hint">Page looks wrong? This copies its address and a few technical details, ready to paste into a message. Nothing is sent anywhere.</div>
+  <textarea id="report-text" readonly hidden></textarea>
   <script src="popup.js"></script>
 </body>
 </html>

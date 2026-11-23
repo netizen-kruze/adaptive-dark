@@ -7,8 +7,8 @@ Sites that are already dark, or that say they handle dark mode themselves, are l
 It is not affiliated with Apple or Mozilla. It collects no data and sends nothing anywhere: all work happens
 inside your browser.
 
-**Status: early (v0.4.0).** It has automated tests and has been checked on about twenty well-known sites, but
-then swept across about 150 more (see Development). Expect some sites to look wrong; the per-site switches are there for that, and bug reports
+**Status: early (v0.5.0).** It has automated tests and has been swept across about 300 well-known sites,
+three pages each (see Development). Expect some sites to look wrong; the per-site switches are there for that, and bug reports
 with a URL are welcome.
 
 ## How it differs from a filter-based dark mode
@@ -53,13 +53,23 @@ The toolbar button opens four switches:
 Changes apply immediately. **Alt+Shift+D** toggles the current site (change the key in `about:addons` ->
 gear icon -> Manage Extension Shortcuts).
 
+**Copy a problem report** (bottom of the same panel) puts the page's address, the extension's status and a few
+technical figures on the clipboard, ready to paste into a bug report. Nothing is sent anywhere, and the part of the
+address after `?` is left out.
+
+The extension times its own work. If a page makes it work so hard that the page would become slow, it switches
+itself off for that page and says so in the panel; reloading the page tries again.
+
 ## Known limits
 
 - `only light` is honoured for the whole page, not for individual elements inside a page.
-- Text placed over a light video or a detailed light photo can become hard to read: videos and photos are left as
-  they are while the text on top of them is lightened.
+- Text placed over a light video or a light background photo can become hard to read: those are left as they
+  are while the text on top of them is lightened. A large, mostly white picture in the page with text over it is
+  dimmed instead.
 - JPEG images are treated as photos and never inverted, so a black-on-white diagram saved as a JPEG stays white.
 - Rules edited in place by scripts, without adding or removing rules, are picked up only after another change.
+- A widget that puts its own inline colours back whenever they are changed keeps those colours (the rating stars
+  on costco.com, for example).
 - Pages can detect the extension (it adds a `data-adm` attribute and a `<style>` element).
 - Firefox does not let any extension run on `about:` pages, addons.mozilla.org, or its PDF viewer.
 
